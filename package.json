@@ -7,10 +7,10 @@
   "homepage": "https://imageat.com",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/imageat/mcp.git"
+    "url": "git+https://github.com/incendies/imageat-mcp.git"
   },
   "bugs": {
-    "url": "https://github.com/imageat/mcp/issues"
+    "url": "https://github.com/incendies/imageat-mcp/issues"
   },
   "keywords": [
     "mcp",
