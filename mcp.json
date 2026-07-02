@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "imageat": {
+      "command": "npx",
+      "args": ["-y", "@imageat/mcp"],
+      "env": {
+        "IMAGEAT_API_KEY": "iat_live_xxxxxxxxxxxx"
+      }
+    }
+  }
+}
