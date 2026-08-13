@@ -133,13 +133,26 @@ function htmlEscape(s: string): string {
   );
 }
 
-function isValidHttpUrl(u: string): boolean {
+function isValidRedirectUri(u: string): boolean {
   try {
     const parsed = new URL(u);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
+    return (
+      parsed.protocol === "http:" ||
+      parsed.protocol === "https:" ||
+      parsed.protocol === "cursor:"
+    );
   } catch {
     return false;
   }
+}
+
+/** Projects-page label for the minted API key, inferred from the OAuth redirect. */
+function keyNameFromRedirectUri(redirectUri: string): string {
+  const lower = redirectUri.toLowerCase();
+  if (lower.startsWith("cursor:") || lower.includes("anysphere")) return "Cursor (MCP)";
+  if (lower.includes("openai") || lower.includes("chatgpt")) return "ChatGPT (MCP)";
+  if (lower.includes("anthropic") || lower.includes("claude")) return "Claude (MCP)";
+  return "MCP";
 }
 
 // ---------------------------------------------------------------------------
@@ -164,7 +177,7 @@ function consentPage(params: {
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Connect ImageAT</title>
+<title>Connect imageat</title>
 <style>
   :root { color-scheme: dark; }
   * { box-sizing: border-box; }
@@ -192,10 +205,10 @@ function consentPage(params: {
 </head>
 <body>
   <form class="card" method="post" action="/authorize">
-    <h1>Connect ImageAT</h1>
-    <p class="sub">Paste your ImageAT API key to let this client generate images, video, and edits billed to your account.</p>
+    <h1>Connect imageat</h1>
+    <p class="sub">Paste your imageat API key to let this client generate images, video, and edits billed to your account.</p>
     ${err}
-    <label for="api_key">ImageAT API key</label>
+    <label for="api_key">imageat API key</label>
     <input id="api_key" name="api_key" type="password" placeholder="iat_live_..." autocomplete="off" autofocus required />
     ${hidden("client_id", params.clientId)}
     ${hidden("redirect_uri", params.redirectUri)}
@@ -203,7 +216,7 @@ function consentPage(params: {
     ${hidden("code_challenge", params.codeChallenge)}
     ${hidden("scope", params.scope)}
     <button type="submit">Authorize</button>
-    <p class="hint">No key yet? Create one on your <a href="https://imageat.com" target="_blank" rel="noopener">ImageAT Projects</a> page (starts with <code>iat_live_</code>).</p>
+    <p class="hint">No key yet? Create one on your <a href="https://imageat.com" target="_blank" rel="noopener">imageat Projects</a> page (starts with <code>iat_live_</code>).</p>
   </form>
 </body>
 </html>`;
@@ -283,7 +296,7 @@ export function mountOAuth(app: Express): void {
       res.status(400).send("PKCE required: code_challenge with code_challenge_method=S256");
       return;
     }
-    if (!isValidHttpUrl(redirectUri)) {
+    if (!isValidRedirectUri(redirectUri)) {
       res.status(400).send("invalid redirect_uri");
       return;
     }
@@ -319,6 +332,7 @@ export function mountOAuth(app: Express): void {
     const consentUrl = new URL(`${IMAGEAT_BASE_URL}/connect/mcp`);
     consentUrl.searchParams.set("ticket", ticket);
     consentUrl.searchParams.set("mcp_callback", `${base}/connect/complete`);
+    consentUrl.searchParams.set("client", keyNameFromRedirectUri(redirectUri));
     res.redirect(302, consentUrl.toString());
   });
 
@@ -400,7 +414,7 @@ export function mountOAuth(app: Express): void {
     const codeChallenge = body.code_challenge ?? "";
     const scope = body.scope ?? "mcp";
 
-    if (!isValidHttpUrl(redirectUri) || !codeChallenge) {
+    if (!isValidRedirectUri(redirectUri) || !codeChallenge) {
       res.status(400).send("invalid authorization request");
       return;
     }
@@ -415,7 +429,7 @@ export function mountOAuth(app: Express): void {
             state,
             codeChallenge,
             scope,
-            error: "That doesn't look like an ImageAT key. It should start with iat_live_.",
+            error: "That doesn't look like an imageat key. It should start with iat_live_.",
           }),
         );
       return;
