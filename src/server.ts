@@ -1,10 +1,19 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { InMemoryTaskMessageQueue, InMemoryTaskStore } from "@modelcontextprotocol/sdk/experimental/tasks/stores/in-memory.js";
+import { readFileSync } from "node:fs";
 import { z } from "zod";
 
 import { ImageATClient, ImageATError, type ImageATStructuredError } from "./client.js";
 
-export const SERVER_VERSION = "0.8.2";
+// Read from package.json (one level above dist/ in both the npm package and the Docker image) so the
+// version clients and /health see can't drift from the published one again.
+export const SERVER_VERSION: string = (() => {
+  try {
+    return JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+  } catch {
+    return "unknown";
+  }
+})();
 const FEATURE_CACHE_MS = 5 * 60 * 1000;
 let featureCache: { features: EditFeature[]; expiresAt: number } | null = null;
 const taskStore = new InMemoryTaskStore();
