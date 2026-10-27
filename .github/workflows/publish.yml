@@ -2,13 +2,13 @@ name: Publish to npm
 
 # Lives in the monorepo at mcp-server/.github/ and runs only in the public incendies/imageat-mcp
 # mirror. Publishes @imageat/mcp through npm Trusted Publishing (OIDC, no token or OTP) whenever
-# package.json carries a version npm does not have yet.
+# package.json carries a version npm does not have yet, then lists server.json in the MCP Registry.
 
 on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ["package.json"]
+    paths: ["package.json", "server.json"]
 
 permissions:
   contents: read
@@ -42,3 +42,22 @@ jobs:
         run: npm ci
       - if: steps.check.outputs.publish == 'true'
         run: npm publish --access public
+      # The MCP Registry lists server.json; GitHub OIDC proves ownership of io.github.incendies/*.
+      - name: Skip versions already in the MCP Registry
+        id: registry
+        run: |
+          name=$(node -p "require('./server.json').name")
+          version=$(node -p "require('./server.json').version")
+          listed=$(curl -fsS "https://registry.modelcontextprotocol.io/v0/servers?search=$name" \
+            | node -e "const d=JSON.parse(require('fs').readFileSync(0,'utf8'));console.log((d.servers||[]).map(s=>(s.server||s).version).join(' '))")
+          if [[ " $listed " == *" $version "* ]]; then
+            echo "$name@$version is already in the MCP Registry."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.registry.outputs.publish == 'true'
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
