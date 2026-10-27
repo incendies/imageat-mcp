@@ -2,6 +2,11 @@
 export interface Config {
   apiKey: string;
   baseUrl: string;
+  /**
+   * Set by the ChatGPT profile. Tags upstream calls so the web app applies the strict
+   * content filter, and keeps purchase prompts out of error text (OpenAI plugin rules).
+   */
+  surface?: "chatgpt";
 }
 
 export function loadConfig(): Config {

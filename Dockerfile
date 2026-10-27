@@ -1,6 +1,11 @@
 # Remote (Streamable HTTP) ImageAT MCP server — deploy target for e.g. mcp.imageat.com.
 # The stdio entry (npx @imageat/mcp) does not need this; this image runs dist/http.js.
-FROM node:20-alpine
+#
+# Build context is THIS DIRECTORY (mcp-server/), not the repository root — the build
+# needs nothing from outside it, and Dokploy builds with the app's own directory as
+# context. Keep every COPY below relative to mcp-server/.
+#   docker build -t imageat-mcp mcp-server/
+FROM node:24.22.1-alpine
 
 WORKDIR /app
 

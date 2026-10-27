@@ -15,6 +15,7 @@
  *   GET  /.well-known/oauth-protected-resource[/mcp]   RFC 9728 resource metadata
  *   GET  /.well-known/oauth-authorization-server[/mcp] RFC 8414 AS metadata
  *   POST /register                                     RFC 7591 dynamic registration
+ *   (client_id may also be an https URL: a client ID metadata document, CIMD)
  *   GET  /authorize                                    consent page (paste API key)
  *   POST /authorize                                    consent submit -> auth code
  *   POST /token                                        code/refresh -> access token
@@ -22,6 +23,7 @@
 import crypto from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { resolveBaseUrl } from "./config.js";
+import { openOAuthToken, sealOAuthToken } from "./oauth-token.js";
 
 // Upstream ImageAT web app that hosts the "Sign in with ImageAT" consent page
 // and the mint/exchange endpoints.
@@ -32,9 +34,6 @@ const INTERNAL_SERVICE_KEY = process.env.INTERNAL_SERVICE_KEY?.trim();
 // Token crypto — the API key sealed into an opaque, self-contained token.
 // ---------------------------------------------------------------------------
 
-const ACCESS_PREFIX = "iao_"; // ImageAT oauth access token
-const REFRESH_PREFIX = "iar_"; // ImageAT oauth refresh token
-
 const secretSource =
   process.env.MCP_OAUTH_SECRET?.trim() || crypto.randomBytes(32).toString("hex");
 if (!process.env.MCP_OAUTH_SECRET?.trim()) {
@@ -43,38 +42,32 @@ if (!process.env.MCP_OAUTH_SECRET?.trim()) {
       "Issued tokens will be invalidated on restart. Set MCP_OAUTH_SECRET to a long random string.\n",
   );
 }
-const CRYPTO_KEY = crypto.scryptSync(secretSource, "imageat-mcp-oauth-v1", 32);
-
-function seal(apiKey: string, prefix: string): string {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", CRYPTO_KEY, iv);
-  const ct = Buffer.concat([cipher.update(apiKey, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return prefix + Buffer.concat([iv, tag, ct]).toString("base64url");
-}
-
-function open(token: string, prefix: string): string | null {
-  if (!token.startsWith(prefix)) return null;
-  try {
-    const raw = Buffer.from(token.slice(prefix.length), "base64url");
-    const iv = raw.subarray(0, 12);
-    const tag = raw.subarray(12, 28);
-    const ct = raw.subarray(28);
-    const decipher = crypto.createDecipheriv("aes-256-gcm", CRYPTO_KEY, iv);
-    decipher.setAuthTag(tag);
-    const out = Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8");
-    return out || null;
-  } catch {
-    return null;
-  }
-}
-
-/** Resolve an incoming Bearer value to the raw ImageAT API key, or null. */
-export function apiKeyFromBearer(bearer: string | null): string | null {
+/**
+ * Resolve an incoming Bearer value to the raw ImageAT API key, or null.
+ *
+ * `endpointPath` is the MCP endpoint being called ("/mcp" or "/chatgpt/mcp"). A token
+ * whose RFC 8707 resource names the other endpoint is rejected (audience check); tokens
+ * from before resource binding, or bound to the bare origin, are accepted anywhere.
+ */
+export function apiKeyFromBearer(bearer: string | null, endpointPath?: string): string | null {
   if (!bearer) return null;
   // Backward-compat: allow a raw iat_ key directly (mcp-remote, Inspector, curl).
   if (bearer.startsWith("iat_")) return bearer;
-  return open(bearer, ACCESS_PREFIX);
+  const claims = openOAuthToken(bearer, "access", secretSource);
+  if (!claims || revokedTokens.has(claims.tokenId)) return null;
+  if (endpointPath && claims.resource && resourcePath(claims.resource) && resourcePath(claims.resource) !== endpointPath) {
+    return null;
+  }
+  return claims.apiKey;
+}
+
+/** Path of a resource URL without trailing slashes ("" for a bare origin or a bad URL). */
+function resourcePath(resource: string): string {
+  try {
+    return new URL(resource).pathname.replace(/\/+$/, "");
+  } catch {
+    return "";
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +79,8 @@ interface AuthCode {
   codeChallenge: string;
   redirectUri: string;
   clientId: string;
+  scope: string;
+  resource?: string;
   expiresAt: number;
 }
 const authCodes = new Map<string, AuthCode>();
@@ -95,6 +90,16 @@ interface RegisteredClient {
 }
 const clients = new Map<string, RegisteredClient>();
 
+// Public OAuth client used by the OpenAI plugin submission portal. `provided`
+// mode expects a conventional, pre-registered client ID rather than ChatGPT's
+// CIMD URL. RFC 9207 `iss` support lets ChatGPT use this stable callback.
+const predefinedClients = new Map<string, RegisteredClient>([
+  [
+    "imageat-chatgpt-public",
+    { redirectUris: ["https://chatgpt.com/connector_platform_oauth_redirect"] },
+  ],
+]);
+
 // Pending "Sign in with ImageAT" authorizations, keyed by a ticket handed to the
 // consent page. Correlates the browser round-trip back to the original PKCE
 // authorize request from the MCP client.
@@ -103,17 +108,26 @@ interface PendingTicket {
   redirectUri: string;
   clientId: string;
   state: string;
+  scope: string;
+  resource?: string;
+  /** Issuer to echo as `iss` on the redirect back to the client (RFC 9207). */
+  issuer: string;
   expiresAt: number;
 }
 const tickets = new Map<string, PendingTicket>();
 
 const CODE_TTL_MS = 10 * 60 * 1000;
-const ACCESS_TTL_S = 60 * 60; // reported to the client; token itself is stateless
+const ACCESS_TTL_S = 60 * 60;
+const REFRESH_TTL_S = 30 * 24 * 60 * 60;
+const usedRefreshTokens = new Map<string, number>();
+const revokedTokens = new Map<string, number>();
 
 function sweep() {
   const now = Date.now();
   for (const [code, v] of authCodes) if (v.expiresAt < now) authCodes.delete(code);
   for (const [t, v] of tickets) if (v.expiresAt < now) tickets.delete(t);
+  for (const [id, expiresAt] of usedRefreshTokens) if (expiresAt < Math.floor(now / 1000)) usedRefreshTokens.delete(id);
+  for (const [id, expiresAt] of revokedTokens) if (expiresAt < Math.floor(now / 1000)) revokedTokens.delete(id);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +169,69 @@ function keyNameFromRedirectUri(redirectUri: string): string {
   return "MCP";
 }
 
+/**
+ * Append the authorization response parameters, including `iss` (RFC 9207). ChatGPT
+ * relies on `iss` to use its stable redirect URI, and it is harmless for other clients.
+ */
+function redirectWith(redirectUri: string, issuer: string, params: Record<string, string>): string {
+  const url = new URL(redirectUri);
+  for (const [k, v] of Object.entries(params)) if (v) url.searchParams.set(k, v);
+  url.searchParams.set("iss", issuer);
+  return url.toString();
+}
+
+// ---------------------------------------------------------------------------
+// Client ID metadata documents (CIMD). ChatGPT identifies itself with an https URL
+// as its client_id (e.g. https://chatgpt.com/oauth/client.json) instead of
+// registering, so nothing has to survive a restart.
+// ---------------------------------------------------------------------------
+
+const CIMD_TTL_MS = 60 * 60 * 1000;
+const CIMD_MAX_BYTES = 64 * 1024;
+const cimdCache = new Map<string, { redirectUris: string[]; expiresAt: number }>();
+
+function isCimdClientId(clientId: string): boolean {
+  try {
+    const url = new URL(clientId);
+    // https only, a real hostname (no IP literals or localhost: we fetch this server-side),
+    // and a path, as the CIMD draft requires.
+    return (
+      url.protocol === "https:" &&
+      !/^(localhost|\d{1,3}(\.\d{1,3}){3}|\[.*\])$/i.test(url.hostname) &&
+      url.hostname.includes(".") &&
+      url.pathname.length > 1 &&
+      !url.hash &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+async function loadCimdClient(clientId: string): Promise<{ redirectUris: string[] } | null> {
+  const cached = cimdCache.get(clientId);
+  if (cached && cached.expiresAt > Date.now()) return cached;
+  try {
+    const res = await fetch(clientId, {
+      headers: { Accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) return null;
+    const text = await res.text();
+    if (text.length > CIMD_MAX_BYTES) return null;
+    const doc = JSON.parse(text) as { client_id?: unknown; redirect_uris?: unknown };
+    if (doc.client_id !== clientId || !Array.isArray(doc.redirect_uris)) return null;
+    const redirectUris = doc.redirect_uris.filter((u): u is string => typeof u === "string");
+    const entry = { redirectUris, expiresAt: Date.now() + CIMD_TTL_MS };
+    cimdCache.set(clientId, entry);
+    return entry;
+  } catch {
+    return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Consent page.
 // ---------------------------------------------------------------------------
@@ -165,6 +242,7 @@ function consentPage(params: {
   state: string;
   codeChallenge: string;
   scope: string;
+  resource?: string;
   error?: string;
 }): string {
   const hidden = (name: string, value: string) =>
@@ -215,6 +293,7 @@ function consentPage(params: {
     ${hidden("state", params.state)}
     ${hidden("code_challenge", params.codeChallenge)}
     ${hidden("scope", params.scope)}
+    ${params.resource ? hidden("resource", params.resource) : ""}
     <button type="submit">Authorize</button>
     <p class="hint">No key yet? Create one on your <a href="https://imageat.com" target="_blank" rel="noopener">imageat Projects</a> page (starts with <code>iat_live_</code>).</p>
   </form>
@@ -235,28 +314,33 @@ export function mountOAuth(app: Express): void {
       issuer: base,
       authorization_endpoint: `${base}/authorize`,
       token_endpoint: `${base}/token`,
+      revocation_endpoint: `${base}/revoke`,
       registration_endpoint: `${base}/register`,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256"],
       token_endpoint_auth_methods_supported: ["none"],
-      scopes_supported: ["mcp"],
+      client_id_metadata_document_supported: true,
+      authorization_response_iss_parameter_supported: true,
+      scopes_supported: ["mcp", "images:generate", "videos:generate", "edits:run", "credits:read"],
     });
   };
-  const resourceMetadata = (req: Request, res: Response) => {
+  const resourceMetadata = (path: string) => (req: Request, res: Response) => {
     const base = publicBaseUrl(req);
     res.json({
-      resource: `${base}/mcp`,
+      resource: `${base}${path}`,
       authorization_servers: [base],
-      scopes_supported: ["mcp"],
+      scopes_supported: ["mcp", "images:generate", "videos:generate", "edits:run", "credits:read"],
       bearer_methods_supported: ["header"],
     });
   };
 
   app.get("/.well-known/oauth-authorization-server", asMetadata);
   app.get("/.well-known/oauth-authorization-server/mcp", asMetadata);
-  app.get("/.well-known/oauth-protected-resource", resourceMetadata);
-  app.get("/.well-known/oauth-protected-resource/mcp", resourceMetadata);
+  app.get("/.well-known/oauth-authorization-server/chatgpt/mcp", asMetadata);
+  app.get("/.well-known/oauth-protected-resource", resourceMetadata("/mcp"));
+  app.get("/.well-known/oauth-protected-resource/mcp", resourceMetadata("/mcp"));
+  app.get("/.well-known/oauth-protected-resource/chatgpt/mcp", resourceMetadata("/chatgpt/mcp"));
 
   // --- Dynamic client registration (RFC 7591). Public PKCE clients only. ---
   app.post("/register", (req: Request, res: Response) => {
@@ -278,7 +362,7 @@ export function mountOAuth(app: Express): void {
   });
 
   // --- Authorization endpoint: render the consent page. ---
-  app.get("/authorize", (req: Request, res: Response) => {
+  app.get("/authorize", async (req: Request, res: Response) => {
     const q = req.query as Record<string, string | undefined>;
     const responseType = q.response_type;
     const clientId = q.client_id ?? "";
@@ -287,6 +371,7 @@ export function mountOAuth(app: Express): void {
     const method = q.code_challenge_method ?? "";
     const state = q.state ?? "";
     const scope = q.scope ?? "mcp";
+    const resource = q.resource?.trim() || undefined;
 
     if (responseType !== "code") {
       res.status(400).send("unsupported response_type (only 'code')");
@@ -300,10 +385,26 @@ export function mountOAuth(app: Express): void {
       res.status(400).send("invalid redirect_uri");
       return;
     }
-    const known = clients.get(clientId);
-    if (known && known.redirectUris.length > 0 && !known.redirectUris.includes(redirectUri)) {
-      res.status(400).send("redirect_uri not registered for this client");
-      return;
+    if (isCimdClientId(clientId)) {
+      const doc = await loadCimdClient(clientId);
+      if (!doc) {
+        res.status(400).send("could not load the client metadata document for this client_id");
+        return;
+      }
+      if (!doc.redirectUris.includes(redirectUri)) {
+        res.status(400).send("redirect_uri is not listed in the client metadata document");
+        return;
+      }
+    } else {
+      const known = clients.get(clientId) ?? predefinedClients.get(clientId);
+      if (!known) {
+        res.status(400).send("unknown client_id");
+        return;
+      }
+      if (!known.redirectUris.includes(redirectUri)) {
+        res.status(400).send("redirect_uri not registered for this client");
+        return;
+      }
     }
 
     // Manual fallback: paste an iat_live_ key directly (for testing / non-browser
@@ -312,7 +413,7 @@ export function mountOAuth(app: Express): void {
       res
         .status(200)
         .type("html")
-        .send(consentPage({ clientId, redirectUri, state, codeChallenge, scope }));
+        .send(consentPage({ clientId, redirectUri, state, codeChallenge, scope, resource }));
       return;
     }
 
@@ -325,6 +426,9 @@ export function mountOAuth(app: Express): void {
       redirectUri,
       clientId,
       state,
+      scope,
+      resource,
+      issuer: publicBaseUrl(req),
       expiresAt: Date.now() + CODE_TTL_MS,
     });
 
@@ -352,10 +456,7 @@ export function mountOAuth(app: Express): void {
 
     // User declined on the consent page.
     if (q.denied === "1") {
-      const url = new URL(pending.redirectUri);
-      url.searchParams.set("error", "access_denied");
-      if (pending.state) url.searchParams.set("state", pending.state);
-      res.redirect(302, url.toString());
+      res.redirect(302, redirectWith(pending.redirectUri, pending.issuer, { error: "access_denied", state: pending.state }));
       return;
     }
 
@@ -389,13 +490,12 @@ export function mountOAuth(app: Express): void {
         codeChallenge: pending.codeChallenge,
         redirectUri: pending.redirectUri,
         clientId: pending.clientId,
+        scope: pending.scope,
+        resource: pending.resource,
         expiresAt: Date.now() + CODE_TTL_MS,
       });
 
-      const url = new URL(pending.redirectUri);
-      url.searchParams.set("code", code);
-      if (pending.state) url.searchParams.set("state", pending.state);
-      res.redirect(302, url.toString());
+      res.redirect(302, redirectWith(pending.redirectUri, pending.issuer, { code, state: pending.state }));
     } catch (err) {
       process.stderr.write(
         `[imageat-mcp-http] exchange error: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -413,6 +513,7 @@ export function mountOAuth(app: Express): void {
     const state = body.state ?? "";
     const codeChallenge = body.code_challenge ?? "";
     const scope = body.scope ?? "mcp";
+    const resource = body.resource?.trim() || undefined;
 
     if (!isValidRedirectUri(redirectUri) || !codeChallenge) {
       res.status(400).send("invalid authorization request");
@@ -429,6 +530,7 @@ export function mountOAuth(app: Express): void {
             state,
             codeChallenge,
             scope,
+            resource,
             error: "That doesn't look like an imageat key. It should start with iat_live_.",
           }),
         );
@@ -442,13 +544,12 @@ export function mountOAuth(app: Express): void {
       codeChallenge,
       redirectUri,
       clientId,
+      scope,
+      resource,
       expiresAt: Date.now() + CODE_TTL_MS,
     });
 
-    const url = new URL(redirectUri);
-    url.searchParams.set("code", code);
-    if (state) url.searchParams.set("state", state);
-    res.redirect(302, url.toString());
+    res.redirect(302, redirectWith(redirectUri, publicBaseUrl(req), { code, state }));
   });
 
   // --- Token endpoint: authorization_code + refresh_token grants. ---
@@ -456,13 +557,14 @@ export function mountOAuth(app: Express): void {
     const body = (req.body ?? {}) as Record<string, string | undefined>;
     const grantType = body.grant_type;
 
-    const issue = (apiKey: string) => {
+    const issue = (apiKey: string, clientId: string, scope: string, resource?: string) => {
+      const binding = { clientId, scope, ...(resource ? { resource } : {}) };
       res.json({
-        access_token: seal(apiKey, ACCESS_PREFIX),
+        access_token: sealOAuthToken(apiKey, "access", ACCESS_TTL_S, secretSource, binding),
         token_type: "Bearer",
         expires_in: ACCESS_TTL_S,
-        refresh_token: seal(apiKey, REFRESH_PREFIX),
-        scope: "mcp",
+        refresh_token: sealOAuthToken(apiKey, "refresh", REFRESH_TTL_S, secretSource, binding),
+        scope,
       });
     };
 
@@ -482,25 +584,42 @@ export function mountOAuth(app: Express): void {
         res.status(400).json({ error: "invalid_grant", error_description: "redirect_uri mismatch" });
         return;
       }
+      if (body.client_id && body.client_id !== entry.clientId) {
+        res.status(400).json({ error: "invalid_grant", error_description: "client_id mismatch" });
+        return;
+      }
       const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
       if (challenge !== entry.codeChallenge) {
         res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
         return;
       }
-      issue(entry.apiKey);
+      issue(entry.apiKey, entry.clientId, entry.scope, entry.resource ?? (body.resource?.trim() || undefined));
       return;
     }
 
     if (grantType === "refresh_token") {
-      const apiKey = open(body.refresh_token ?? "", REFRESH_PREFIX);
-      if (!apiKey) {
+      sweep();
+      const claims = openOAuthToken(body.refresh_token ?? "", "refresh", secretSource);
+      if (!claims || usedRefreshTokens.has(claims.tokenId) || revokedTokens.has(claims.tokenId) || (body.client_id && claims.clientId && body.client_id !== claims.clientId)) {
         res.status(400).json({ error: "invalid_grant", error_description: "invalid refresh_token" });
         return;
       }
-      issue(apiKey);
+      usedRefreshTokens.set(claims.tokenId, claims.expiresAt);
+      issue(claims.apiKey, claims.clientId || body.client_id || "", claims.scope || "mcp", claims.resource);
       return;
     }
 
     res.status(400).json({ error: "unsupported_grant_type" });
+  });
+
+  app.post("/revoke", (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, string | undefined>;
+    const token = body.token ?? "";
+    const claims = openOAuthToken(token, token.startsWith("iar_") ? "refresh" : "access", secretSource);
+    if (claims && (!body.client_id || !claims.clientId || body.client_id === claims.clientId)) {
+      revokedTokens.set(claims.tokenId, claims.expiresAt);
+      if (claims.kind === "refresh") usedRefreshTokens.set(claims.tokenId, claims.expiresAt);
+    }
+    res.status(200).send();
   });
 }
