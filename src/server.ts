@@ -764,6 +764,158 @@ export async function createImageatServer(
     );
   }
 
+  // ---- Playable game tools -------------------------------------------------
+  // The caller (Claude) writes the game code; imageat supplies the rules, assets and hosting.
+  // Same runtime contract and kit as the on-site generator at /ai-game-generator.
+
+  const gameDimension = z.enum(["2d", "fast_3d", "3d"]);
+  const gameGenre = z.enum(["shooter", "runner", "adventure", "action", "strategy", "maze", "puzzle", "simulation"]);
+  const gameIssues = (e: unknown) => {
+    const body = e instanceof ImageATError ? (e.body as { issues?: Array<{ rule: string; message: string }> } | undefined) : undefined;
+    return body?.issues?.length ? `\n${body.issues.map((i) => `- [${i.rule}] ${i.message}`).join("\n")}` : "";
+  };
+
+  server.registerTool(
+    "imageat_game_guide",
+    {
+      title: "Game guide",
+      description:
+        "Start here to build a playable browser game. Returns the workflow, the runtime rules and the kit API " +
+        "(Phaser for 2D, three.js for 3D) that game code must follow, plus genre tips. Free.",
+      inputSchema: {
+        dimension: gameDimension.default("2d").describe("2d sprites, fast_3d (library models) or 3d (library + AI-made hero models)."),
+        genre: gameGenre.optional(),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ dimension, genre }) => {
+      try {
+        const q = new URLSearchParams({ dimension, ...(genre ? { genre } : {}) });
+        const data = await client.get<{ guide: string }>(`/api/v1/games/guide?${q}`);
+        return ok(data.guide);
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_search_game_models",
+    {
+      title: "Search game 3D models",
+      description:
+        "Search imageat's library of 2,700+ ready-made, game-ready 3D models (vehicles, buildings, nature, " +
+        "castle, pirate, space, food, furniture, characters, animals...). Returns library_key values to pass " +
+        "to imageat_publish_game, with animation names and sizes. Free.",
+      inputSchema: {
+        query: z.string().min(2).describe("Plain search words, e.g. 'pine tree', 'police car', 'knight'."),
+        animated: z.boolean().optional().describe("Prefer models with animations (walk, run, idle)."),
+        limit: z.number().int().min(1).max(25).optional(),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ query, animated, limit }) => {
+      try {
+        const q = new URLSearchParams({ q: query, ...(animated ? { animated: "1" } : {}), ...(limit ? { limit: String(limit) } : {}) });
+        const data = await client.get<{ models: unknown[] }>(`/api/v1/games/models?${q}`);
+        return { content: [{ type: "text" as const, text: JSON.stringify(data.models, null, 2) }], structuredContent: data as Record<string, unknown> };
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_generate_game_asset",
+    {
+      title: "Generate game asset",
+      description:
+        "Make one asset for a game and keep it ready for imageat_publish_game. kind: sprite (transparent " +
+        "object/character), background, texture, logo (title lettering, transparent), or hero_model (a custom " +
+        "3D model made from your description, takes 1-3 minutes). Returns an asset_id. Billed per asset.",
+      inputSchema: {
+        kind: z.enum(["sprite", "background", "texture", "logo", "hero_model"]),
+        prompt: z.string().min(3).describe("Describe the single asset, including art style and palette shared by the whole game."),
+        width: z.number().int().min(64).max(2048).optional(),
+        height: z.number().int().min(64).max(2048).optional(),
+        reference_image_urls: z.array(z.string()).max(4).optional().describe("imageat-hosted images to match (character likeness, style)."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        const data = await client.post<Record<string, unknown>>("/api/v1/games/assets", args);
+        return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], structuredContent: data };
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_publish_game",
+    {
+      title: "Publish game",
+      description:
+        "Publish a game you wrote against the imageat kit (see imageat_game_guide). Bundles your code, the " +
+        "engine and every asset into one playable page and returns its link. The code is checked first; if " +
+        "it needs changes you get the list and are not charged. 1 credit.",
+      inputSchema: {
+        title: z.string().min(1).max(60),
+        prompt: z.string().min(3).describe("The game brief: setting, goal, controls, progression, look."),
+        tagline: z.string().max(140).optional().describe("One line under the logo on the title screen."),
+        genre: gameGenre,
+        dimension: gameDimension,
+        orientation: z.enum(["portrait", "landscape"]).default("portrait"),
+        code: z.string().min(20).describe("The complete game JavaScript (runs inside an async function after the kit loads)."),
+        assets: z
+          .array(
+            z.object({
+              id: z.string().describe("The id the code uses, e.g. kit.asset('player') or kit.model('hero')."),
+              asset_id: z.string().optional().describe("From imageat_generate_game_asset."),
+              library_key: z.string().optional().describe("From imageat_search_game_models."),
+            }),
+          )
+          .default([]),
+        visibility: z.enum(["unlisted", "private"]).optional().describe("unlisted (default): anyone with the link can play."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        const data = await client.post<{ game_id: string; url: string; version: number }>("/api/v1/games", args);
+        return {
+          content: [{ type: "text" as const, text: `Published "${args.title}": ${data.url} (game_id ${data.game_id}). Share the link to play.` }],
+          structuredContent: data as unknown as Record<string, unknown>,
+        };
+      } catch (e) {
+        return fail(`${e instanceof ImageATError ? e.message : String(e)}${gameIssues(e)}`);
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_update_game",
+    {
+      title: "Update game",
+      description: "Publish new code for one of your games as a new version (same assets, same link). Free.",
+      inputSchema: {
+        game_id: z.string(),
+        code: z.string().min(20).describe("The complete new game JavaScript."),
+        note: z.string().max(200).optional().describe("What changed."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ game_id, code, note }) => {
+      try {
+        const data = await client.post<{ url: string; version: number }>(`/api/v1/games/${encodeURIComponent(game_id)}/versions`, { code, note });
+        return ok(`Updated to v${data.version}: ${data.url}`);
+      } catch (e) {
+        return fail(`${e instanceof ImageATError ? e.message : String(e)}${gameIssues(e)}`);
+      }
+    },
+  );
+
   // ---- Resources and reusable prompts ------------------------------------
   server.registerResource(
     "imageat-account-credits",
@@ -817,6 +969,15 @@ export async function createImageatServer(
     async ({ imageUrl, motion, duration }) => ({ messages: [{ role: "user", content: { type: "text", text: `Use imageat_generate_video to animate ${imageUrl}. Motion direction: ${motion}.${duration ? ` Target duration: ${duration}.` : ""} Preserve identity and composition unless the motion requires revealing new space.` } }] }),
   );
 
+  server.registerPrompt(
+    "create-playable-game",
+    {
+      title: "Create a playable game",
+      description: "Design, build and publish a browser game with imageat assets and hosting.",
+      argsSchema: { idea: z.string().describe("The game idea."), style: z.string().optional().describe("2d, fast_3d or 3d") },
+    },
+    async ({ idea, style }) => ({ messages: [{ role: "user", content: { type: "text", text: `Make a playable browser game: ${idea}. Call imageat_game_guide first (dimension ${style || "2d"}), design the game, make its assets${style && style !== "2d" ? " and pick library models" : ""}, write the complete code against the kit, then publish it with imageat_publish_game and give me the link.` } }] }),
+  );
   server.registerPrompt("create-social-campaign", { title: "Create a social campaign", description: "Plan and generate a channel-ready visual campaign.", argsSchema: { brief: z.string(), channels: z.string().optional() } }, async ({ brief, channels }) => ({ messages: [{ role: "user", content: { type: "text", text: `Create a cohesive social campaign for: ${brief}. Channels: ${channels || "Instagram, TikTok, and LinkedIn"}. Propose three visual concepts, then use imageat tools to generate the strongest assets with platform-ready aspect ratios.` } }] }));
   server.registerPrompt("generate-and-upscale", { title: "Generate and upscale", description: "Generate a strong master visual ready for high-resolution delivery.", argsSchema: { subject: z.string(), usage: z.string().optional() } }, async ({ subject, usage }) => ({ messages: [{ role: "user", content: { type: "text", text: `Generate a high-quality master visual of ${subject}${usage ? ` for ${usage}` : ""}. Choose the best available image model and resolution, preserve clean edges and realistic detail, and return the final CDN URL.` } }] }));
   server.registerPrompt("create-creative-variants", { title: "Create creative variants", description: "Generate three deliberately distinct creative directions.", argsSchema: { brief: z.string(), aspectRatio: z.string().optional() } }, async ({ brief, aspectRatio }) => ({ messages: [{ role: "user", content: { type: "text", text: `Create three clearly differentiated visual directions for: ${brief}. Use distinct composition, lighting, palette, and camera language for each.${aspectRatio ? ` Use ${aspectRatio}.` : ""} Generate all three and label their URLs.` } }] }));

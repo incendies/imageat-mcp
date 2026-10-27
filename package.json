@@ -1,7 +1,7 @@
 {
   "name": "@imageat/mcp",
   "mcpName": "io.github.incendies/imageat",
-  "version": "0.8.4",
+  "version": "0.9.0",
   "description": "Model Context Protocol server for ImageAT — generate images, generate video, and run image-edit tools from any MCP client.",
   "type": "module",
   "license": "MIT",

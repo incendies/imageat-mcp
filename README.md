@@ -20,6 +20,11 @@ against your ImageAT account.
 | `imageat_check_video_status` | Checks an asynchronous video generation until it completes. |
 | `imageat_ask_gemini_argon` | Ask Google's Gemini 4 Argon (optional image URLs, Google Search / Maps grounding). Returns the text answer. |
 | `imageat_check_credits` | Current prepaid API balance (USD). |
+| `imageat_game_guide` | Start here for a playable browser game: workflow, runtime rules and the kit API (Phaser 2D / three.js 3D). Free. |
+| `imageat_search_game_models` | Search 2,700+ game-ready 3D library models; returns `library_key`s with animations. Free. |
+| `imageat_generate_game_asset` | One game asset: sprite, background, texture, logo, or an AI-made 3D `hero_model`. Returns an `asset_id`. |
+| `imageat_publish_game` | Checks your game code, bundles it with the engine and assets, and returns a shareable play link. |
+| `imageat_update_game` | Publishes new code for one of your games as a new version (same link). Free. |
 | `imageat_edit_<feature>` | One tool **per edit feature**, fetched live at startup — e.g. `imageat_edit_remove-background`, `imageat_edit_object-eraser`, `imageat_edit_relight`, `imageat_edit_virtual-try-on`, `imageat_edit_city-teleport`, `imageat_edit_ai-edit-pro`. New features appear automatically. |
 
 If the feature catalog can't be reached at startup, a single generic `imageat_edit_image` tool

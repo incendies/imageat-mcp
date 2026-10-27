@@ -101,7 +101,7 @@ export class ImageATClient {
       : method === "POST" && path === "/api/v1/videos"
         ? 45_000
         // High-thinking, search-grounded LLM answers can run past two minutes.
-        : path === "/api/v1/chat/completions"
+        : path === "/api/v1/chat/completions" || path === "/api/v1/games/assets"
           ? 300_000
           : 120_000;
     try {
