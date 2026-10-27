@@ -1,0 +1,44 @@
+name: Publish to npm
+
+# Lives in the monorepo at mcp-server/.github/ and runs only in the public incendies/imageat-mcp
+# mirror. Publishes @imageat/mcp through npm Trusted Publishing (OIDC, no token or OTP) whenever
+# package.json carries a version npm does not have yet.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["package.json"]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: npm-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.repository == 'incendies/imageat-mcp'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Skip versions already on npm
+        id: check
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if npm view "@imageat/mcp@$version" version >/dev/null 2>&1; then
+            echo "@imageat/mcp@$version is already published."
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.publish == 'true'
+        run: npm ci
+      - if: steps.check.outputs.publish == 'true'
+        run: npm publish --access public
