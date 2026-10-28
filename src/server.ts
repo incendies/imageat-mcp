@@ -794,12 +794,13 @@ export async function createImageatServer(
       inputSchema: {
         dimension: gameDimension.default("2d").describe("2d sprites, fast_3d (library models) or 3d (library + AI-made hero models)."),
         genre: gameGenre.optional(),
+        multiplayer: z.boolean().optional().describe("true for a game friends play together in rooms from a link (adds the kit.net API)."),
       },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dimension, genre }) => {
+    async ({ dimension, genre, multiplayer }) => {
       try {
-        const q = new URLSearchParams({ dimension, ...(genre ? { genre } : {}) });
+        const q = new URLSearchParams({ dimension, ...(genre ? { genre } : {}), ...(multiplayer ? { multiplayer: "1" } : {}) });
         const data = await client.get<{ guide: string }>(`/api/v1/games/guide?${q}`);
         return ok(data.guide);
       } catch (e) {
@@ -887,6 +888,8 @@ export async function createImageatServer(
           )
           .default([]),
         visibility: z.enum(["unlisted", "private"]).optional().describe("unlisted (default): anyone with the link can play."),
+        multiplayer: z.boolean().optional().describe("The code uses kit.net rooms (must call kit.net.lobby). The game page then hosts rooms and invite links."),
+        max_players: z.number().int().min(2).max(24).optional().describe("Room size for multiplayer games (default 8)."),
       },
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
     },
