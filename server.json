@@ -3,12 +3,12 @@
   "name": "io.github.incendies/imageat",
   "description": "Generate and edit images and videos with imageat.",
   "repository": { "url": "https://github.com/incendies/imageat-mcp", "source": "github" },
-  "version": "0.9.1",
+  "version": "0.10.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@imageat/mcp",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "transport": { "type": "stdio" },
       "environmentVariables": [{ "name": "IMAGEAT_API_KEY", "description": "imageat API key", "isRequired": true, "format": "string", "isSecret": true }]
     }

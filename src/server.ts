@@ -505,6 +505,40 @@ export async function createImageatServer(
     },
   );
 
+  server.registerTool(
+    "ai_visibility_check",
+    {
+      title: "AI Visibility Check",
+      description:
+        "Check how visible a website is to ChatGPT, Claude, Perplexity and AI agents. Looks for llms.txt, " +
+        "robots.txt rules for AI crawlers (GPTBot, ClaudeBot, PerplexityBot, Google-Extended...), schema.org " +
+        "JSON-LD and Organization schema, sitemap, OpenGraph, title/description/H1, content depth, HTTPS, response time " +
+        "and MCP/agent discovery files (server card, server.json, agent card). " +
+        "Returns a 0-100 score and a fix list. Free.",
+      inputSchema: {
+        url: z.string().min(3).describe("Website address, e.g. 'example.com' or 'https://docs.example.com'."),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ url }) => {
+      try {
+        const data = await client.get<{
+          url: string;
+          score: number;
+          grade: string;
+          checks: Array<{ label: string; status: string; summary: string; fix: string | null }>;
+        }>(`/api/v1/ai-visibility/check?${new URLSearchParams({ url })}`);
+        const lines = [
+          `AI Visibility for ${data.url}: ${data.score}/100 (grade ${data.grade})`,
+          ...data.checks.map((c) => `- [${c.status}] ${c.label}: ${c.summary}${c.fix ? `\n  Fix: ${c.fix}` : ""}`),
+        ];
+        return { content: [{ type: "text" as const, text: lines.join("\n") }], structuredContent: data as unknown as Record<string, unknown> };
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
   // ---- LLM tools -------------------------------------------------------------
   // Runs through the same /v1/chat/completions endpoint (and billing) as the REST API.
 

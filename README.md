@@ -20,6 +20,7 @@ against your ImageAT account.
 | `imageat_check_video_status` | Checks an asynchronous video generation until it completes. |
 | `imageat_ask_gemini_argon` | Ask Google's Gemini 4 Argon (optional image URLs, Google Search / Maps grounding). Returns the text answer. |
 | `imageat_check_credits` | Current prepaid API balance (USD). |
+| `ai_visibility_check` | Score how visible a website is to ChatGPT, Claude, Perplexity and AI agents (llms.txt, AI crawler rules, JSON-LD, sitemap, OpenGraph, MCP/agent files) with a fix list. Free. |
 | `imageat_game_guide` | Start here for a playable browser game: workflow, runtime rules and the kit API (Phaser 2D / three.js 3D). Free. |
 | `imageat_search_game_models` | Search 2,700+ game-ready 3D library models; returns `library_key`s with animations. Free. |
 | `imageat_generate_game_asset` | One game asset: sprite, background, texture, logo, or an AI-made 3D `hero_model`. Returns an `asset_id`. |
