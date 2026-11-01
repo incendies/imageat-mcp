@@ -991,6 +991,180 @@ export async function createImageatServer(
     });
   }
 
+  // ---- Social Hub tools ---------------------------------------------------
+  // Publish what imageat made to the user's own social accounts. Accounts are
+  // connected on the site; posting spends no credits but needs an imageat plan.
+
+  type SocialDestination = { account_id: string; account_name: string; platform: string; status: string; published_url: string | null; error: string | null };
+  type SocialPost = { id: string; status: string; caption: string; scheduled_at: string | null; media: Array<{ url: string; type: string }>; destinations: SocialDestination[] };
+  const describePost = (post: SocialPost) =>
+    `Post ${post.id}: ${post.status}${post.scheduled_at ? ` (scheduled ${post.scheduled_at})` : ""}\n` +
+    post.destinations
+      .map((d) => `- ${d.platform} ${d.account_name}: ${d.status}${d.published_url ? ` → ${d.published_url}` : ""}${d.error ? ` (${d.error})` : ""}`)
+      .join("\n");
+
+  server.registerTool(
+    "imageat_social_list_accounts",
+    {
+      title: "List Social Accounts",
+      description:
+        "List the social accounts (Instagram, Facebook Pages, LinkedIn, X, …) the user connected in imageat Social Hub, " +
+        "whether each can be posted to now, and the user's autopilot posting schedules. Call this before creating a post.",
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async () => {
+      try {
+        const [accounts, autopilots] = await Promise.all([
+          client.get<{
+            accounts: Array<{ id: string; platform: string; name: string; handle: string | null; can_publish: boolean; reason: string | null }>;
+            plan: { can_publish: boolean; max_accounts: number };
+            connect_url: string;
+          }>("/api/v1/social/accounts"),
+          client.get<{ data: Array<{ id: string; name: string; active: boolean; queued_count: number; next_free_slot: string | null }> }>(
+            "/api/v1/social/autopilots",
+          ),
+        ]);
+        if (accounts.accounts.length === 0) {
+          return ok(`No social accounts are connected yet. The user can connect them at ${accounts.connect_url}`);
+        }
+        const lines = accounts.accounts.map(
+          (a) => `- ${a.id} — ${a.platform} ${a.name}${a.handle ? ` (${a.handle})` : ""}: ${a.can_publish ? "ready" : `not available: ${a.reason}`}`,
+        );
+        const pilots = autopilots.data.map(
+          (p) => `- ${p.id} — "${p.name}"${p.active ? "" : " (paused)"}, ${p.queued_count} queued, next free slot ${p.next_free_slot || "none"}`,
+        );
+        return ok(
+          `Accounts:\n${lines.join("\n")}` +
+            (pilots.length ? `\n\nAutopilots (use imageat_social_queue_autopilot):\n${pilots.join("\n")}` : "") +
+            (accounts.plan.can_publish ? "" : "\n\nPosting needs an imageat plan: https://imageat.com/pricing"),
+        );
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_social_create_post",
+    {
+      title: "Create Social Post",
+      description:
+        "Post an image or video to the user's connected social accounts, schedule it, or save a draft in Social Hub. " +
+        "Pass media as generation_id (from an imageat generation) or media_url. mode defaults to \"draft\". " +
+        "Publishing is public and cannot be undone: show the user the caption, media and accounts and get their OK " +
+        "before using mode \"publish\" or \"schedule\". No credits are spent.",
+      inputSchema: {
+        account_ids: z.array(z.string()).min(1).max(10).describe("Account ids from imageat_social_list_accounts."),
+        caption: z.string().max(5000).optional().describe("Caption used for every account without its own in captions."),
+        captions: z.record(z.string(), z.string()).optional().describe("Per-account captions keyed by account id, e.g. a shorter one for X."),
+        generation_id: z.string().optional().describe("An imageat generation whose output to post."),
+        media_url: z.string().url().optional().describe("An https image (JPEG/PNG/WebP) or MP4 video URL, used when there is no generation_id."),
+        alt_text: z.string().max(300).optional(),
+        mode: z.enum(["draft", "schedule", "publish"]).optional().describe("draft (default), schedule, or publish now."),
+        scheduled_at: z.string().optional().describe("ISO 8601 time, required for schedule, at least a minute ahead."),
+        timezone: z.string().optional().describe("IANA zone the time was chosen in, e.g. Europe/Istanbul."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        const data = await client.post<{ post: SocialPost }>("/api/v1/social/posts", args);
+        const note =
+          data.post.status === "publishing"
+            ? "\nVideos finish processing on the platform; check again with imageat_social_list_posts in a minute or two."
+            : data.post.status === "draft"
+              ? "\nSaved as a draft. The user can review it in Social Hub: https://imageat.com/social-hub"
+              : "";
+        return ok(describePost(data.post) + note);
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_social_list_posts",
+    {
+      title: "List Social Posts",
+      description: "List recent Social Hub posts with each account's status and published link. Filter by status if needed.",
+      inputSchema: {
+        status: z.enum(["draft", "scheduled", "publishing", "published", "partially_published", "failed", "cancelled"]).optional(),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ status, limit }) => {
+      try {
+        const params = new URLSearchParams();
+        if (status) params.set("status", status);
+        params.set("limit", String(limit || 10));
+        const data = await client.get<{ data: SocialPost[] }>(`/api/v1/social/posts?${params}`);
+        return ok(data.data.length ? data.data.map(describePost).join("\n\n") : "No posts yet.");
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_social_cancel_post",
+    {
+      title: "Cancel Social Post",
+      description: "Cancel a draft or scheduled Social Hub post before it goes out. Accounts it already published to are not affected.",
+      inputSchema: { post_id: z.string().describe("Post id from imageat_social_create_post or imageat_social_list_posts.") },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    async ({ post_id }) => {
+      try {
+        const data = await client.delete<{ post: SocialPost }>(`/api/v1/social/posts/${encodeURIComponent(post_id)}`);
+        return ok(describePost(data.post));
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
+    "imageat_social_queue_autopilot",
+    {
+      title: "Queue on Autopilot",
+      description:
+        "Add up to 30 images or videos to one of the user's Social Hub autopilots; each becomes a scheduled post in the " +
+        "autopilot's next free weekly slot, on the accounts it posts to. Confirm the items with the user first.",
+      inputSchema: {
+        autopilot_id: z.string().describe("Autopilot id from imageat_social_list_accounts."),
+        items: z
+          .array(
+            z.object({
+              caption: z.string().max(5000).optional(),
+              generation_id: z.string().optional(),
+              media_url: z.string().url().optional(),
+              alt_text: z.string().max(300).optional(),
+            }),
+          )
+          .min(1)
+          .max(30),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async ({ autopilot_id, items }) => {
+      try {
+        const data = await client.post<{ results: Array<{ ok: boolean; post_id?: string; scheduled_at?: string; error?: string }> }>(
+          `/api/v1/social/autopilots/${encodeURIComponent(autopilot_id)}/queue`,
+          { items },
+        );
+        return ok(
+          data.results
+            .map((r, i) => `${i + 1}. ${r.ok ? `scheduled ${r.scheduled_at} (post ${r.post_id})` : `not queued: ${r.error}`}`)
+            .join("\n"),
+        );
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
   server.registerPrompt(
     "create-product-visual",
     {
@@ -1024,10 +1198,10 @@ export async function createImageatServer(
     },
     async ({ idea, style }) => ({ messages: [{ role: "user", content: { type: "text", text: `Make a playable browser game: ${idea}. Call imageat_game_guide first (dimension ${style || "2d"}), design the game, make its assets${style && style !== "2d" ? " and pick library models" : ""}, write the complete code against the kit, then publish it with imageat_publish_game and give me the link.` } }] }),
   );
-  server.registerPrompt("create-social-campaign", { title: "Create a social campaign", description: "Plan and generate a channel-ready visual campaign.", argsSchema: { brief: z.string(), channels: z.string().optional() } }, async ({ brief, channels }) => ({ messages: [{ role: "user", content: { type: "text", text: `Create a cohesive social campaign for: ${brief}. Channels: ${channels || "Instagram, TikTok, and LinkedIn"}. Propose three visual concepts, then use imageat tools to generate the strongest assets with platform-ready aspect ratios.` } }] }));
+  server.registerPrompt("create-social-campaign", { title: "Create a social campaign", description: "Plan and generate a channel-ready visual campaign.", argsSchema: { brief: z.string(), channels: z.string().optional() } }, async ({ brief, channels }) => ({ messages: [{ role: "user", content: { type: "text", text: `Create a cohesive social campaign for: ${brief}. Channels: ${channels || "Instagram, TikTok, and LinkedIn"}. Propose three visual concepts, then use imageat tools to generate the strongest assets with platform-ready aspect ratios. Then check imageat_social_list_accounts and offer to save them as Social Hub drafts or schedule them; publish only after the user approves.` } }] }));
   server.registerPrompt("generate-and-upscale", { title: "Generate and upscale", description: "Generate a strong master visual ready for high-resolution delivery.", argsSchema: { subject: z.string(), usage: z.string().optional() } }, async ({ subject, usage }) => ({ messages: [{ role: "user", content: { type: "text", text: `Generate a high-quality master visual of ${subject}${usage ? ` for ${usage}` : ""}. Choose the best available image model and resolution, preserve clean edges and realistic detail, and return the final CDN URL.` } }] }));
   server.registerPrompt("create-creative-variants", { title: "Create creative variants", description: "Generate three deliberately distinct creative directions.", argsSchema: { brief: z.string(), aspectRatio: z.string().optional() } }, async ({ brief, aspectRatio }) => ({ messages: [{ role: "user", content: { type: "text", text: `Create three clearly differentiated visual directions for: ${brief}. Use distinct composition, lighting, palette, and camera language for each.${aspectRatio ? ` Use ${aspectRatio}.` : ""} Generate all three and label their URLs.` } }] }));
 
-  const toolCount = 8 + (features.length || 1);
+  const toolCount = 13 + (features.length || 1);
   return { server, toolCount };
 }

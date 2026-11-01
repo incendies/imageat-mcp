@@ -26,6 +26,11 @@ against your ImageAT account.
 | `imageat_generate_game_asset` | One game asset: sprite, background, texture, logo, or an AI-made 3D `hero_model`. Returns an `asset_id`. |
 | `imageat_publish_game` | Checks your game code, bundles it with the engine and assets, and returns a shareable play link. |
 | `imageat_update_game` | Publishes new code for one of your games as a new version (same link). Free. |
+| `imageat_social_list_accounts` | Social accounts connected in imageat Social Hub (Instagram, Facebook Pages, LinkedIn, X…), whether each can post now, and autopilot schedules. Free. |
+| `imageat_social_create_post` | Post an image or video (a `generation_id` or `media_url`) to connected accounts: draft (default), schedule, or publish now; per-account captions. No credits; needs an imageat plan. |
+| `imageat_social_list_posts` | Recent Social Hub posts with each account's status and published link. Free. |
+| `imageat_social_cancel_post` | Cancel a draft or scheduled post before it goes out. Free. |
+| `imageat_social_queue_autopilot` | Queue up to 30 images/videos on an autopilot; each lands in its next free weekly slot. Free. |
 | `imageat_edit_<feature>` | One tool **per edit feature**, fetched live at startup — e.g. `imageat_edit_remove-background`, `imageat_edit_object-eraser`, `imageat_edit_relight`, `imageat_edit_virtual-try-on`, `imageat_edit_city-teleport`, `imageat_edit_ai-edit-pro`. New features appear automatically. |
 
 If the feature catalog can't be reached at startup, a single generic `imageat_edit_image` tool

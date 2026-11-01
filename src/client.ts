@@ -81,7 +81,7 @@ export class ImageATClient {
     private readonly auth: AuthProvider,
   ) {}
 
-  private async request<T>(method: "GET" | "POST", path: string, body?: unknown): Promise<T> {
+  private async request<T>(method: "GET" | "POST" | "DELETE", path: string, body?: unknown): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: await this.auth.authorizationHeader(),
     };
@@ -150,6 +150,10 @@ export class ImageATClient {
 
   post<T>(path: string, body: unknown): Promise<T> {
     return this.request<T>("POST", path, body);
+  }
+
+  delete<T>(path: string): Promise<T> {
+    return this.request<T>("DELETE", path);
   }
 }
 
