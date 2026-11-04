@@ -3,10 +3,11 @@ export interface Config {
   apiKey: string;
   baseUrl: string;
   /**
-   * Set by the ChatGPT profile. Tags upstream calls so the web app applies the strict
-   * content filter, and keeps purchase prompts out of error text (OpenAI plugin rules).
+   * Set by the ChatGPT and Google (Gemini) profiles. Tags upstream calls so the web app
+   * applies the strict content filter and bills website credits, and keeps purchase prompts
+   * out of error text (OpenAI plugin rules).
    */
-  surface?: "chatgpt";
+  surface?: "chatgpt" | "google";
 }
 
 export function loadConfig(): Config {

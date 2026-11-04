@@ -9,11 +9,14 @@
  * Two endpoints share the sessions and OAuth server:
  *   /mcp          — the generic tool surface (Claude, Cursor, ChatGPT developer mode, ...)
  *   /chatgpt/mcp  — the published ChatGPT app profile (see chatgpt.ts)
+ *   /google/mcp   — the Gemini connected app (same curated profile, "google" surface)
  *
  * Env:
  *   PORT                   — listen port (default 8787)
  *   IMAGEAT_BASE_URL       — web app base (default https://imageat.com)
  *   OPENAI_APPS_CHALLENGE  — domain verification token for the ChatGPT app submission
+ *   GOOGLE_CONNECTED_APPS_CHALLENGE — contents of google-connected-apps.json (Connected Console
+ *                            domain verification), served at /.well-known/google-connected-apps
  */
 import express, { type Request, type Response } from "express";
 import cors from "cors";
@@ -132,13 +135,24 @@ app.get("/.well-known/openai-apps-challenge", (_req, res) => {
   res.type("text/plain").send(token);
 });
 
+// Domain verification for the Google Connected Console: the downloaded
+// google-connected-apps.json, served as-is (200, no redirect).
+app.get("/.well-known/google-connected-apps", (_req, res) => {
+  const body = process.env.GOOGLE_CONNECTED_APPS_CHALLENGE?.trim();
+  if (!body) {
+    res.status(404).type("text/plain").send("Not configured");
+    return;
+  }
+  res.type("application/json").send(body);
+});
+
 app.get("/health", (_req, res) => {
   // `version` makes it possible to tell which build is live from outside,
   // which a deploy otherwise can't confirm.
   res.json({ ok: true, version: SERVER_VERSION, baseUrl, sessions: Object.keys(transports).length });
 });
 
-type Profile = "generic" | "chatgpt";
+type Profile = "generic" | "chatgpt" | "google";
 
 // MCP endpoints — POST carries JSON-RPC; GET opens the SSE stream; DELETE ends a session.
 const handleMcpPost = (profile: Profile, endpointPath: string) => async (req: Request, res: Response) => {
@@ -168,9 +182,9 @@ const handleMcpPost = (profile: Profile, endpointPath: string) => async (req: Re
         if (transport.sessionId) delete transports[transport.sessionId];
       };
 
-      if (profile === "chatgpt") {
-        const client = new ImageATClient({ apiKey, baseUrl, surface: "chatgpt" }, new ApiKeyAuthProvider(apiKey));
-        await createChatGPTServer(client).connect(transport);
+      if (profile === "chatgpt" || profile === "google") {
+        const client = new ImageATClient({ apiKey, baseUrl, surface: profile }, new ApiKeyAuthProvider(apiKey));
+        await createChatGPTServer(client, profile).connect(transport);
       } else {
         const client = new ImageATClient({ apiKey, baseUrl }, new ApiKeyAuthProvider(apiKey));
         const { server } = await createImageatServer(client, (msg) =>
@@ -213,6 +227,7 @@ const handleMcpPost = (profile: Profile, endpointPath: string) => async (req: Re
 
 app.post("/mcp", handleMcpPost("generic", "/mcp"));
 app.post("/chatgpt/mcp", handleMcpPost("chatgpt", "/chatgpt/mcp"));
+app.post("/google/mcp", handleMcpPost("google", "/google/mcp"));
 
 // GET (SSE stream) and DELETE (terminate) reuse the existing session transport.
 async function handleSessionRequest(req: Request, res: Response) {
@@ -230,9 +245,11 @@ app.get("/mcp", handleSessionRequest);
 app.delete("/mcp", handleSessionRequest);
 app.get("/chatgpt/mcp", handleSessionRequest);
 app.delete("/chatgpt/mcp", handleSessionRequest);
+app.get("/google/mcp", handleSessionRequest);
+app.delete("/google/mcp", handleSessionRequest);
 
 app.listen(PORT, () => {
   process.stderr.write(
-    `[imageat-mcp-http] listening on :${PORT} — MCP endpoints /mcp and /chatgpt/mcp, upstream ${baseUrl}\n`,
+    `[imageat-mcp-http] listening on :${PORT} — MCP endpoints /mcp, /chatgpt/mcp and /google/mcp, upstream ${baseUrl}\n`,
   );
 });

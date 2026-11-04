@@ -12,6 +12,11 @@ export interface OAuthTokenClaims {
   scope?: string;
   /** RFC 8707 resource the token was issued for (the MCP endpoint URL). */
   resource?: string;
+  /**
+   * Persistent linking (Gemini connected app): the refresh token is long-lived and is
+   * returned unchanged on refresh instead of being rotated, as Google requires.
+   */
+  persistent?: boolean;
 }
 
 const PREFIXES: Record<OAuthTokenKind, string> = { access: "iao_", refresh: "iar_" };
@@ -20,7 +25,7 @@ function keyFromSecret(secret: string) {
   return crypto.scryptSync(secret, "imageat-mcp-oauth-v2", 32);
 }
 
-export function sealOAuthToken(apiKey: string, kind: OAuthTokenKind, ttlSeconds: number, secret: string, binding: { clientId?: string; scope?: string; resource?: string } = {}): string {
+export function sealOAuthToken(apiKey: string, kind: OAuthTokenKind, ttlSeconds: number, secret: string, binding: { clientId?: string; scope?: string; resource?: string; persistent?: boolean } = {}): string {
   const now = Math.floor(Date.now() / 1000);
   const claims: OAuthTokenClaims = {
     apiKey,

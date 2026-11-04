@@ -1,5 +1,7 @@
 /**
- * The ChatGPT app profile, served at /chatgpt/mcp.
+ * The ChatGPT app profile, served at /chatgpt/mcp. The same curated surface is served to
+ * the Gemini connected app at /google/mcp (profile "google": server instructions, "google"
+ * surface tag, same strict content filter).
  *
  * A curated, static tool surface for the published ChatGPT app, kept apart from the
  * generic /mcp endpoint because OpenAI's directory rules differ from other clients:
@@ -133,8 +135,26 @@ function imageResult(data: Record<string, unknown>): MediaResult {
   };
 }
 
-export function createChatGPTServer(client: ImageATClient): McpServer {
-  const server = new McpServer({ name: "imageat", title: "imageat", version: SERVER_VERSION });
+/**
+ * Server instructions for the Gemini connected app (Google asks for a domain description
+ * so the model can route to the server). The ChatGPT profile keeps none: its reviewed
+ * listing already carries that text.
+ */
+const GOOGLE_INSTRUCTIONS =
+  "imageat is an AI image and video studio. Use it when the user wants to create an image or a short video " +
+  "from a description, animate a photo, or edit a photo: change it with a text instruction, remove or replace " +
+  "the background, relight it, try on clothing, or place a person in a city. Every generation spends credits " +
+  "from the user's imageat account; check the balance with imageat_check_credits when the user asks about it. " +
+  "Videos take 1–5 minutes: imageat_generate_video returns a jobId to pass to imageat_check_video_status. " +
+  "Results come back as image or video URLs. Explicit sexual content is not available.";
+
+export type AppProfile = "chatgpt" | "google";
+
+export function createChatGPTServer(client: ImageATClient, profile: AppProfile = "chatgpt"): McpServer {
+  const server = new McpServer(
+    { name: "imageat", title: "imageat", version: SERVER_VERSION },
+    profile === "google" ? { instructions: GOOGLE_INSTRUCTIONS } : undefined,
+  );
 
   server.registerResource(
     "imageat-media-widget",

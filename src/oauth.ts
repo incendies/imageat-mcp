@@ -8,8 +8,9 @@
  *
  * The access/refresh tokens are stateless: they are the user's API key encrypted
  * with AES-256-GCM under a server secret. So there is no session store to lose on
- * restart — the only in-memory state is short-lived authorization codes and the
- * set of dynamically-registered clients.
+ * restart — the only in-memory state is short-lived authorization codes. Dynamically
+ * registered client IDs are self-describing too (redirect URIs signed into the ID), so a
+ * client registered once (Gemini registers once per app) keeps working across deploys.
  *
  * Endpoints:
  *   GET  /.well-known/oauth-protected-resource[/mcp]   RFC 9728 resource metadata
@@ -88,7 +89,6 @@ const authCodes = new Map<string, AuthCode>();
 interface RegisteredClient {
   redirectUris: string[];
 }
-const clients = new Map<string, RegisteredClient>();
 
 // Public OAuth client used by the OpenAI plugin submission portal. `provided`
 // mode expects a conventional, pre-registered client ID rather than ChatGPT's
@@ -99,6 +99,67 @@ const predefinedClients = new Map<string, RegisteredClient>([
     { redirectUris: ["https://chatgpt.com/connector_platform_oauth_redirect"] },
   ],
 ]);
+
+/**
+ * Pre-registered client for the Google Connected Console ("Pre-registered" auth option),
+ * in case DCR is not used. Google's callback carries a per-app path, so it is matched
+ * against Google's documented redirect patterns rather than a fixed list.
+ */
+const GOOGLE_CLIENT_ID = "imageat-google";
+
+/** Google's OAuth redirect hosts (prod, sandbox, test) with the /r/* and /a/* paths. */
+function isGoogleRedirectUri(u: string): boolean {
+  try {
+    const url = new URL(u);
+    return (
+      url.protocol === "https:" &&
+      /^oauth-redirect(-sandbox|-test)?\.googleusercontent\.com$/.test(url.hostname) &&
+      /^\/[ra]\/[^/]/.test(url.pathname) &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+}
+
+// --- Stateless dynamic registration: the redirect URIs travel inside the client_id,
+//     signed so they can't be swapped. ---
+const DCR_PREFIX = "mcpd_";
+const DCR_MAX_URIS = 5;
+const DCR_MAX_URI_LENGTH = 1024;
+
+function dcrSignature(payload: string): string {
+  return crypto.createHmac("sha256", `${secretSource}:dcr`).update(payload).digest("base64url").slice(0, 32);
+}
+
+function encodeDcrClientId(redirectUris: string[]): string {
+  const payload = Buffer.from(JSON.stringify(redirectUris)).toString("base64url");
+  return `${DCR_PREFIX}${payload}.${dcrSignature(payload)}`;
+}
+
+function decodeDcrClientId(clientId: string): RegisteredClient | null {
+  if (!clientId.startsWith(DCR_PREFIX)) return null;
+  const [payload, sig] = clientId.slice(DCR_PREFIX.length).split(".");
+  if (!payload || !sig) return null;
+  const expected = dcrSignature(payload);
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  try {
+    const uris = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
+    if (!Array.isArray(uris) || !uris.every((u) => typeof u === "string")) return null;
+    return { redirectUris: uris as string[] };
+  } catch {
+    return null;
+  }
+}
+
+/** Whether `redirectUri` is allowed for a non-CIMD client, or null for an unknown client. */
+function clientAllowsRedirect(clientId: string, redirectUri: string): boolean | null {
+  if (clientId === GOOGLE_CLIENT_ID) return isGoogleRedirectUri(redirectUri);
+  const known = predefinedClients.get(clientId) ?? decodeDcrClientId(clientId);
+  if (!known) return null;
+  return known.redirectUris.includes(redirectUri);
+}
 
 // Pending "Sign in with ImageAT" authorizations, keyed by a ticket handed to the
 // consent page. Correlates the browser round-trip back to the original PKCE
@@ -119,6 +180,12 @@ const tickets = new Map<string, PendingTicket>();
 const CODE_TTL_MS = 10 * 60 * 1000;
 const ACCESS_TTL_S = 60 * 60;
 const REFRESH_TTL_S = 30 * 24 * 60 * 60;
+/**
+ * Persistent linking (Gemini): Google keeps one refresh token per link and never expects
+ * it to change, so it must outlive any realistic link. Unlinking revokes the underlying
+ * API key upstream (see /revoke), and deleting that key on the Projects page ends it too.
+ */
+const PERSISTENT_REFRESH_TTL_S = 10 * 365 * 24 * 60 * 60;
 const usedRefreshTokens = new Map<string, number>();
 const revokedTokens = new Map<string, number>();
 
@@ -166,7 +233,27 @@ function keyNameFromRedirectUri(redirectUri: string): string {
   if (lower.startsWith("cursor:") || lower.includes("anysphere")) return "Cursor (MCP)";
   if (lower.includes("openai") || lower.includes("chatgpt")) return "ChatGPT (MCP)";
   if (lower.includes("anthropic") || lower.includes("claude")) return "Claude (MCP)";
+  if (isGoogleRedirectUri(redirectUri)) return "Gemini (MCP)";
   return "MCP";
+}
+
+/** Permanently revoke an MCP-minted API key on the web app. Best effort, logged on failure. */
+async function revokeApiKeyUpstream(apiKey: string): Promise<void> {
+  if (!INTERNAL_SERVICE_KEY) {
+    process.stderr.write("[imageat-mcp-http] revoke: INTERNAL_SERVICE_KEY not set, API key left active\n");
+    return;
+  }
+  try {
+    const r = await fetch(`${IMAGEAT_BASE_URL}/api/oauth/mcp/revoke`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${INTERNAL_SERVICE_KEY}` },
+      body: JSON.stringify({ key: apiKey }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!r.ok) process.stderr.write(`[imageat-mcp-http] revoke: upstream returned ${r.status}\n`);
+  } catch (err) {
+    process.stderr.write(`[imageat-mcp-http] revoke failed: ${err instanceof Error ? err.message : String(err)}\n`);
+  }
 }
 
 /**
@@ -338,9 +425,11 @@ export function mountOAuth(app: Express): void {
   app.get("/.well-known/oauth-authorization-server", asMetadata);
   app.get("/.well-known/oauth-authorization-server/mcp", asMetadata);
   app.get("/.well-known/oauth-authorization-server/chatgpt/mcp", asMetadata);
+  app.get("/.well-known/oauth-authorization-server/google/mcp", asMetadata);
   app.get("/.well-known/oauth-protected-resource", resourceMetadata("/mcp"));
   app.get("/.well-known/oauth-protected-resource/mcp", resourceMetadata("/mcp"));
   app.get("/.well-known/oauth-protected-resource/chatgpt/mcp", resourceMetadata("/chatgpt/mcp"));
+  app.get("/.well-known/oauth-protected-resource/google/mcp", resourceMetadata("/google/mcp"));
 
   // --- Dynamic client registration (RFC 7591). Public PKCE clients only. ---
   app.post("/register", (req: Request, res: Response) => {
@@ -348,8 +437,15 @@ export function mountOAuth(app: Express): void {
     const redirectUris = Array.isArray(body.redirect_uris)
       ? (body.redirect_uris as unknown[]).filter((u): u is string => typeof u === "string")
       : [];
-    const clientId = `mcp_${crypto.randomBytes(16).toString("hex")}`;
-    clients.set(clientId, { redirectUris });
+    if (
+      redirectUris.length === 0 ||
+      redirectUris.length > DCR_MAX_URIS ||
+      redirectUris.some((u) => u.length > DCR_MAX_URI_LENGTH || !isValidRedirectUri(u))
+    ) {
+      res.status(400).json({ error: "invalid_redirect_uri", error_description: "redirect_uris must list 1–5 valid URIs" });
+      return;
+    }
+    const clientId = encodeDcrClientId(redirectUris);
     res.status(201).json({
       client_id: clientId,
       client_id_issued_at: Math.floor(Date.now() / 1000),
@@ -396,12 +492,12 @@ export function mountOAuth(app: Express): void {
         return;
       }
     } else {
-      const known = clients.get(clientId) ?? predefinedClients.get(clientId);
-      if (!known) {
+      const allowed = clientAllowsRedirect(clientId, redirectUri);
+      if (allowed === null) {
         res.status(400).send("unknown client_id");
         return;
       }
-      if (!known.redirectUris.includes(redirectUri)) {
+      if (!allowed) {
         res.status(400).send("redirect_uri not registered for this client");
         return;
       }
@@ -557,13 +653,22 @@ export function mountOAuth(app: Express): void {
     const body = (req.body ?? {}) as Record<string, string | undefined>;
     const grantType = body.grant_type;
 
-    const issue = (apiKey: string, clientId: string, scope: string, resource?: string) => {
-      const binding = { clientId, scope, ...(resource ? { resource } : {}) };
+    const issue = (
+      apiKey: string,
+      clientId: string,
+      scope: string,
+      resource?: string,
+      persistent?: { refreshToken?: string },
+    ) => {
+      const binding = { clientId, scope, ...(resource ? { resource } : {}), ...(persistent ? { persistent: true } : {}) };
       res.json({
         access_token: sealOAuthToken(apiKey, "access", ACCESS_TTL_S, secretSource, binding),
         token_type: "Bearer",
         expires_in: ACCESS_TTL_S,
-        refresh_token: sealOAuthToken(apiKey, "refresh", REFRESH_TTL_S, secretSource, binding),
+        // Persistent links keep the refresh token they were given; others rotate it.
+        refresh_token:
+          persistent?.refreshToken ??
+          sealOAuthToken(apiKey, "refresh", persistent ? PERSISTENT_REFRESH_TTL_S : REFRESH_TTL_S, secretSource, binding),
         scope,
       });
     };
@@ -593,7 +698,13 @@ export function mountOAuth(app: Express): void {
         res.status(400).json({ error: "invalid_grant", error_description: "PKCE verification failed" });
         return;
       }
-      issue(entry.apiKey, entry.clientId, entry.scope, entry.resource ?? (body.resource?.trim() || undefined));
+      issue(
+        entry.apiKey,
+        entry.clientId,
+        entry.scope,
+        entry.resource ?? (body.resource?.trim() || undefined),
+        isGoogleRedirectUri(entry.redirectUri) ? {} : undefined,
+      );
       return;
     }
 
@@ -604,6 +715,12 @@ export function mountOAuth(app: Express): void {
         res.status(400).json({ error: "invalid_grant", error_description: "invalid refresh_token" });
         return;
       }
+      if (claims.persistent) {
+        issue(claims.apiKey, claims.clientId || body.client_id || "", claims.scope || "mcp", claims.resource, {
+          refreshToken: body.refresh_token,
+        });
+        return;
+      }
       usedRefreshTokens.set(claims.tokenId, claims.expiresAt);
       issue(claims.apiKey, claims.clientId || body.client_id || "", claims.scope || "mcp", claims.resource);
       return;
@@ -612,13 +729,17 @@ export function mountOAuth(app: Express): void {
     res.status(400).json({ error: "unsupported_grant_type" });
   });
 
-  app.post("/revoke", (req: Request, res: Response) => {
+  app.post("/revoke", async (req: Request, res: Response) => {
     const body = (req.body ?? {}) as Record<string, string | undefined>;
     const token = body.token ?? "";
     const claims = openOAuthToken(token, token.startsWith("iar_") ? "refresh" : "access", secretSource);
     if (claims && (!body.client_id || !claims.clientId || body.client_id === claims.clientId)) {
       revokedTokens.set(claims.tokenId, claims.expiresAt);
       if (claims.kind === "refresh") usedRefreshTokens.set(claims.tokenId, claims.expiresAt);
+      // The in-memory list is lost on restart, and a persistent link's tokens live for
+      // years, so unlinking also revokes the minted API key upstream: every token sealed
+      // around it stops working for good.
+      if (claims.persistent) await revokeApiKeyUpstream(claims.apiKey);
     }
     res.status(200).send();
   });

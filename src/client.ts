@@ -158,7 +158,7 @@ export class ImageATClient {
 }
 
 /**
- * Proof that a call came through this server's ChatGPT profile, which lets the web app
+ * Proof that a call came through this server's ChatGPT or Google profile, which lets the web app
  * bill website credits for it (lib/api-credit-mode.ts isVerifiedChatGPTSurface).
  */
 function surfaceAuthToken(surface: string): string | null {
@@ -199,8 +199,8 @@ function messageForStatus(status: number, body: unknown, surface?: Config["surfa
         balance !== undefined || required !== undefined
           ? ` (balance: ${balance ?? "?"}, required: ${required ?? "?"})`
           : "";
-      // ChatGPT apps may not prompt purchases, so that surface gets the bare fact.
-      if (surface === "chatgpt") return `Your imageat credit balance is too low for this request${extra}.`;
+      // ChatGPT apps may not prompt purchases, so the consumer app surfaces get the bare fact.
+      if (surface) return `Your imageat credit balance is too low for this request${extra}.`;
       return `Insufficient credits (402)${extra}. Top up at imageat.com.`;
     }
     case 429:
