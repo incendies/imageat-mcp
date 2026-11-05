@@ -270,7 +270,7 @@ export function createChatGPTServer(client: ImageATClient, profile: AppProfile =
       inputSchema: {
         prompt: z.string().min(1).describe("What happens in the video: subject, action, camera movement, style."),
         model: z
-          .enum(["veo", "veo-lite", "kling3", "seedance25", "seedance2", "grok-1-5", "pixverse", "flux3", "flux3-max", "wan3", "kling4", "midjourney-v8"])
+          .enum(["veo", "veo-lite", "kling3", "seedance25", "seedance2", "grok-1-5", "pixverse", "flux3", "flux3-max", "wan3", "kling4", "gemini-omni-12", "midjourney-v8"])
           .optional()
           .describe(
             'Video model. Default "veo" (cinematic, with sound). "seedance25" for long shots (4–30s) and keeping a face ' +
@@ -278,13 +278,14 @@ export function createChatGPTServer(client: ImageATClient, profile: AppProfile =
               '"flux3-max" (FLUX 3 Max) for close prompt adherence, 5–20s at 720p/1080p with native audio, ' +
               '"veo-lite" for cheaper drafts, "midjourney-v8" to animate ' +
               "a start image into 4 five-second clips (image-to-video only). " +
-              '"kling4" (Kling 4.0) for the newest Kling: 3–30s at 720p/1080p from text, a start image or first/last frames.',
+              '"kling4" (Kling 4.0) for the newest Kling: 3–30s at 720p/1080p from text, a start image or first/last frames. ' +
+              '"gemini-omni-12" (Google Gemini Omni Flash 1.2) for 3–15s with native audio up to 4K, 16:9 or 9:16.',
           ),
         aspectRatio: z.enum(["16:9", "9:16", "1:1"]).optional(),
         duration: z
           .string()
           .optional()
-          .describe('Length like "8s". Supported values vary: "veo"/"veo-lite" take 4s, 6s or 8s; "seedance25" 4s–30s; "wan3" 2s–30s; "kling4" 3s–30s; "flux3-max" 5s–20s.'),
+          .describe('Length like "8s". Supported values vary: "veo"/"veo-lite" take 4s, 6s or 8s; "seedance25" 4s–30s; "wan3" 2s–30s; "kling4" 3s–30s; "gemini-omni-12" 3s–15s; "flux3-max" 5s–20s.'),
         resolution: z.string().optional().describe('e.g. "720p" or "1080p" (model-dependent). Higher costs more.'),
         generateAudio: z.boolean().optional().describe("Generate a soundtrack where the model supports it."),
         startImage: fileRef.optional(),

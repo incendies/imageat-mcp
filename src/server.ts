@@ -318,6 +318,7 @@ export async function createImageatServer(
               '"wan3" (Wan 3.0: text, image, first/last-frame or up to 10 reference images; 2s–30s, 480p/720p/1080p, native audio), ' +
               '"midjourney-v8" (Midjourney V8.2, image-to-video only: needs imageUrl, returns 4 × 5s clips per run). ' +
               '"kling4" (Kling 4.0: text, image, first/last-frame or up to 10 reference images; 3s–30s, 720p/1080p), ' +
+              '"gemini-omni-12" (Google Gemini Omni Flash 1.2: text, image, first/last-frame or up to 10 reference images; 3s–15s, 360p/720p/1080p/4k, 16:9 or 9:16, native audio), ' +
               "Use these exact ids — do not invent variants like seedance-2.5 or flux-3.",
           ),
         aspectRatio: z.string().optional(),
@@ -333,7 +334,7 @@ export async function createImageatServer(
           .optional()
           .describe(
             'e.g. "720p", "1080p". Varies by model — "seedance25" and "midjourney-v8" are 480p or 720p, ' +
-              '"flux3", "flux3-max" and "kling4" are 720p or 1080p, "wan3" is 480p, 720p or 1080p, "veo" also allows "4k".',
+              '"flux3", "flux3-max" and "kling4" are 720p or 1080p, "wan3" is 480p, 720p or 1080p, "gemini-omni-12" 360p/720p/1080p/4k, "veo" also allows "4k".',
           ),
         negativePrompt: z.string().optional(),
         generateAudio: z.boolean().optional(),
