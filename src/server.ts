@@ -677,6 +677,38 @@ export async function createImageatServer(
   );
 
   server.registerTool(
+    "imageat_generate_sound_effect",
+    {
+      title: "Generate Sound Effect",
+      description:
+        "Turn a text description into a sound effect (foley, ambience, impacts, UI sounds, creatures). Returns an mp3 URL. " +
+        "1 credit per started 10 seconds; omit durationSeconds to let the model choose (billed as 22s).",
+      inputSchema: {
+        text: z.string().min(1).max(450).describe('What the sound is, e.g. "heavy wooden door creaks open in a stone hall".'),
+        durationSeconds: z.number().min(0.5).max(22).optional().describe("Length in seconds, 0.5–22."),
+        loop: z.boolean().optional().describe("Make it loop seamlessly (ambience, game audio)."),
+      },
+      outputSchema: { status: z.string(), url: z.string(), creditsUsed: z.number().optional(), generationId: z.string().optional() },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    async (args) => {
+      try {
+        const data = await client.post<{ url: string; creditsUsed?: number; generationId?: string }>("/api/v1/audio/sound-effects", args);
+        const structuredContent = {
+          status: "completed",
+          url: data.url,
+          ...(typeof data.creditsUsed === "number" ? { creditsUsed: data.creditsUsed } : {}),
+          ...(data.generationId ? { generationId: data.generationId } : {}),
+        };
+        const text = `Sound effect ready: ${data.url}` + (typeof data.creditsUsed === "number" ? `\nCredits used: ${data.creditsUsed}` : "");
+        return { content: [{ type: "text" as const, text }], structuredContent };
+      } catch (e) {
+        return fail(e instanceof ImageATError ? e.message : String(e));
+      }
+    },
+  );
+
+  server.registerTool(
     "imageat_assemble_video",
     {
       title: "Assemble Narrated Video",
