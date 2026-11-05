@@ -207,7 +207,8 @@ export async function createImageatServer(
           .describe(
             'Model id. One of: "nano-banana-pro" (default), "nano-banana-2.1" (Google\'s newest Nano Banana, up to 14 references), ' +
               '"nano-banana-2", "nano-banana", ' +
-              '"gpt-image-2.5" (OpenAI GPT Image 2.5, Flare), "gpt-image-2.5-sunburst" (slower, finer detail), ' +
+              '"gpt-image-2.6" (OpenAI GPT Image 2.6, Flare; can return an animated GIF), "gpt-image-2.6-sunburst" (slower, finer detail), ' +
+              '"gpt-image-2.5", "gpt-image-2.5-sunburst", ' +
               '"midjourney-v8" (Midjourney V8.2; every call returns 4 images for one charge and takes ~2 minutes; ' +
               'images[0] is re-imagined, images[1] is a style reference), ' +
               '"gpt-image-2" (OpenAI GPT Image 2), "seedream-5.0-pro", "krea-3" (Krea 3: 1K/2K, up to 4 references, faithful edits), "krea-2-large", "krea-2-medium". ' +
@@ -217,14 +218,19 @@ export async function createImageatServer(
           .enum(["low", "medium", "high", "xhigh", "max"])
           .optional()
           .describe(
-            'Quality tier for the GPT Image models. "xhigh" and "max" only exist on gpt-image-2.5; ' +
+            'Quality tier for the GPT Image models. "xhigh" and "max" only exist on gpt-image-2.5 and gpt-image-2.6; ' +
               "higher tiers cost more credits.",
           ),
         transparentBackground: z
           .boolean()
           .optional()
-          .describe("gpt-image-2.5 only: return a cut-out PNG with no background."),
-        outputFormat: z.enum(["png", "jpeg", "webp"]).optional(),
+          .describe("gpt-image-2.5 / gpt-image-2.6 only: return a cut-out PNG with no background."),
+        outputFormat: z
+          .enum(["png", "jpeg", "webp", "gif"])
+          .optional()
+          .describe('"gif" (gpt-image-2.6 only) returns one animated GIF from the prompt, or animates images[0]. Priced as one 4K image.'),
+        gifFrames: z.number().int().min(2).max(16).optional().describe("gpt-image-2.6 GIF only: number of frames, 2–16 (default 9)."),
+        gifFrameMs: z.number().int().min(20).max(2000).optional().describe("gpt-image-2.6 GIF only: milliseconds per frame (default 160)."),
         enableWebSearch: z
           .boolean()
           .optional()
