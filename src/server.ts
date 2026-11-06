@@ -16,8 +16,6 @@ export const SERVER_VERSION: string = (() => {
 })();
 const FEATURE_CACHE_MS = 5 * 60 * 1000;
 let featureCache: { features: EditFeature[]; expiresAt: number } | null = null;
-const taskStore = new InMemoryTaskStore();
-const taskMessageQueue = new InMemoryTaskMessageQueue();
 
 interface EditFeature {
   id: string;
@@ -176,6 +174,12 @@ export async function createImageatServer(
   client: ImageATClient,
   log: (msg: string) => void = () => {},
 ): Promise<{ server: McpServer; toolCount: number }> {
+  // One task store per server instance. The HTTP transport builds a server per session,
+  // and each session is bound to one user's key; a shared store let tasks/list,
+  // tasks/result and tasks/cancel reach other users' video tasks (the SDK's in-memory
+  // store ignores the session id).
+  const taskStore = new InMemoryTaskStore();
+  const taskMessageQueue = new InMemoryTaskMessageQueue();
   const server = new McpServer({ name: "imageat", version: SERVER_VERSION }, {
     capabilities: { tasks: { requests: { tools: { call: {} } } } },
     taskStore,

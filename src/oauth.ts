@@ -173,9 +173,41 @@ interface PendingTicket {
   resource?: string;
   /** Issuer to echo as `iss` on the redirect back to the client (RFC 9207). */
   issuer: string;
+  /** Random value also set as a cookie on the browser that started /authorize. */
+  browserBinding: string;
   expiresAt: number;
 }
 const tickets = new Map<string, PendingTicket>();
+
+/**
+ * /connect/complete must run in the browser that started /authorize. Without this, an
+ * attacker could start a flow in their own AI client, send the consent link (with their
+ * ticket) to a victim, and after the victim approved, finish the ticket themselves and
+ * link the victim's account to the attacker's client.
+ */
+function bindingCookieName(ticket: string): string {
+  return `iat_mcp_${crypto.createHash("sha256").update(ticket).digest("hex").slice(0, 16)}`;
+}
+
+function readCookie(req: Request, name: string): string | undefined {
+  const header = req.headers.cookie;
+  if (!header) return undefined;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return undefined;
+}
+
+/** Host the authorization code is sent to, shown on the consent page. */
+function redirectHost(redirectUri: string): string {
+  try {
+    const u = new URL(redirectUri);
+    return u.protocol === "http:" || u.protocol === "https:" ? u.host : `${u.protocol}//`;
+  } catch {
+    return "";
+  }
+}
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const ACCESS_TTL_S = 60 * 60;
@@ -229,10 +261,21 @@ function isValidRedirectUri(u: string): boolean {
 
 /** Projects-page label for the minted API key, inferred from the OAuth redirect. */
 function keyNameFromRedirectUri(redirectUri: string): string {
+  // Match on the exact host: a substring match labelled any registered redirect that
+  // merely contained "claude"/"chatgpt" (e.g. claude.attacker.tld) as that vendor on
+  // the consent page.
   const lower = redirectUri.toLowerCase();
-  if (lower.startsWith("cursor:") || lower.includes("anysphere")) return "Cursor (MCP)";
-  if (lower.includes("openai") || lower.includes("chatgpt")) return "ChatGPT (MCP)";
-  if (lower.includes("anthropic") || lower.includes("claude")) return "Claude (MCP)";
+  if (lower.startsWith("cursor:")) return "Cursor (MCP)";
+  let host = "";
+  try {
+    host = new URL(redirectUri).hostname.toLowerCase();
+  } catch {
+    return "MCP";
+  }
+  const isHost = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (isHost("anysphere.co") || isHost("cursor.com") || isHost("cursor.sh")) return "Cursor (MCP)";
+  if (isHost("openai.com") || isHost("chatgpt.com")) return "ChatGPT (MCP)";
+  if (isHost("anthropic.com") || isHost("claude.ai") || isHost("claude.com")) return "Claude (MCP)";
   if (isGoogleRedirectUri(redirectUri)) return "Gemini (MCP)";
   return "MCP";
 }
@@ -517,7 +560,9 @@ export function mountOAuth(app: Express): void {
     // approve). Correlate via a ticket so /connect/complete can finish the flow.
     sweep();
     const ticket = crypto.randomBytes(32).toString("base64url");
+    const browserBinding = crypto.randomBytes(24).toString("base64url");
     tickets.set(ticket, {
+      browserBinding,
       codeChallenge,
       redirectUri,
       clientId,
@@ -533,6 +578,14 @@ export function mountOAuth(app: Express): void {
     consentUrl.searchParams.set("ticket", ticket);
     consentUrl.searchParams.set("mcp_callback", `${base}/connect/complete`);
     consentUrl.searchParams.set("client", keyNameFromRedirectUri(redirectUri));
+    consentUrl.searchParams.set("redirect_host", redirectHost(redirectUri));
+    res.cookie(bindingCookieName(ticket), browserBinding, {
+      httpOnly: true,
+      secure: base.startsWith("https://"),
+      sameSite: "lax",
+      maxAge: CODE_TTL_MS,
+      path: "/",
+    });
     res.redirect(302, consentUrl.toString());
   });
 
@@ -549,6 +602,19 @@ export function mountOAuth(app: Express): void {
       return;
     }
     tickets.delete(ticket);
+    res.clearCookie(bindingCookieName(ticket), { path: "/" });
+
+    const binding = readCookie(req, bindingCookieName(ticket));
+    if (
+      !binding ||
+      binding.length !== pending.browserBinding.length ||
+      !crypto.timingSafeEqual(Buffer.from(binding), Buffer.from(pending.browserBinding))
+    ) {
+      res
+        .status(400)
+        .send("This authorization was started in a different browser. Please start again from your AI client.");
+      return;
+    }
 
     // User declined on the consent page.
     if (q.denied === "1") {
@@ -613,6 +679,11 @@ export function mountOAuth(app: Express): void {
 
     if (!isValidRedirectUri(redirectUri) || !codeChallenge) {
       res.status(400).send("invalid authorization request");
+      return;
+    }
+    // Same client/redirect check as GET /authorize (CIMD clients are URL ids, validated there).
+    if (!/^https:\/\//.test(clientId) && clientAllowsRedirect(clientId, redirectUri) !== true) {
+      res.status(400).send("redirect_uri not registered for this client");
       return;
     }
     if (!apiKey.startsWith("iat_")) {
