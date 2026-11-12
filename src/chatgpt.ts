@@ -215,6 +215,7 @@ export function createChatGPTServer(client: ImageATClient, profile: AppProfile =
             "gpt-image-2.5",
             "gpt-image-2",
             "midjourney-v8",
+            "seedream-5.5",
             "seedream-5.0-pro",
             "krea-3",
             "krea-2-large",
@@ -222,7 +223,7 @@ export function createChatGPTServer(client: ImageATClient, profile: AppProfile =
           .optional()
           .describe(
             'Image model. Default "nano-banana-pro" (best all-round, strong text rendering). "gpt-image-2.5" for precise ' +
-              'layouts and typography, "seedream-5.0-pro" for photoreal scenes, "krea-3" or "krea-2-large" for aesthetic/stylized art, ' +
+              'layouts and typography, "seedream-5.5" (cheapest, up to 10 references) or "seedream-5.0-pro" for photoreal scenes, "krea-3" or "krea-2-large" for aesthetic/stylized art, ' +
               '"midjourney-v8" (Midjourney V8.2) for painterly, art-directed looks: it always returns 4 images and takes ~2 minutes.',
           ),
         quality: z
