@@ -317,6 +317,7 @@ export async function createImageatServer(
           .describe(
             'Model id. One of: "veo" (default), "veo-lite", "sora", "kling", "kling3", "kling3-omni", ' +
               '"grok", "grok-1-5", "seedance2", "seedance2-mini", "seedance25", ' +
+              '"seedance25-flash" (Seedance 2.5 Flash: faster and cheaper, same inputs as seedance25; 4s–30s, 480p/720p), ' +
               '"gemini-omni", "pixverse", "happyhorse", "happyhorse-ref", "flux3", ' +
               '"flux3-max" (FLUX 3 Max: text, image or first/last-frame; 5s–20s, 720p/1080p, native audio, follows prompts closely), ' +
               '"wan3" (Wan 3.0: text, image, first/last-frame or up to 10 reference images; 2s–30s, 480p/720p/1080p, native audio), ' +
@@ -330,14 +331,14 @@ export async function createImageatServer(
           .string()
           .optional()
           .describe(
-            'e.g. "8s". Supported lengths vary by model — "seedance25" and "kling4" take 3s/4s–30s, "wan3" 2s–30s, "flux3"/"flux3-max" 5s–20s, ' +
+            'e.g. "8s". Supported lengths vary by model — "seedance25"/"seedance25-flash" and "kling4" take 3s/4s–30s, "wan3" 2s–30s, "flux3"/"flux3-max" 5s–20s, ' +
               '"veo"/"veo-lite" only 4s, 6s or 8s.',
           ),
         resolution: z
           .string()
           .optional()
           .describe(
-            'e.g. "720p", "1080p". Varies by model — "seedance25" and "midjourney-v8" are 480p or 720p, ' +
+            'e.g. "720p", "1080p". Varies by model — "seedance25", "seedance25-flash" and "midjourney-v8" are 480p or 720p, ' +
               '"flux3", "flux3-max" and "kling4" are 720p or 1080p, "wan3" is 480p, 720p or 1080p, "gemini-omni-12" 360p/720p/1080p/4k, "veo" also allows "4k".',
           ),
         negativePrompt: z.string().optional(),
