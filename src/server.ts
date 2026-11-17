@@ -349,8 +349,12 @@ export async function createImageatServer(
           .array(z.string())
           .optional()
           .describe(
-            "Reference image URLs for reference-to-video (Seedance 2.0 / 2.5, Wan 3.0 up to 10): the video keeps the face/subject from these images.",
+            "Reference image URLs for reference-to-video (Seedance 2.0 / 2.5, Wan 3.0, Seedance 2.5 Flash Reference up to 10): the video keeps the face/subject from these images. Name them in the prompt as [Image 1], [Image 2].",
           ),
+        referenceAudioUrls: z
+          .array(z.string())
+          .optional()
+          .describe('"seedance25" / "seedance25-flash" reference mode only (Flash up to 5): voice or music clips to follow, named [Audio 1] in the prompt. Send with referenceImageUrls.'),
       },
       outputSchema: generationOutputSchema,
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
