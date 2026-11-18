@@ -215,7 +215,7 @@ export async function createImageatServer(
               '"gpt-image-2.5", "gpt-image-2.5-sunburst", ' +
               '"midjourney-v8" (Midjourney V8.2; every call returns 4 images for one charge and takes ~2 minutes; ' +
               'images[0] is re-imagined, images[1] is a style reference), ' +
-              '"gpt-image-2" (OpenAI GPT Image 2), "seedream-5.5" (ByteDance\'s newest Seedream: 1K/2K, up to 10 references), "seedream-5.0-pro", "krea-3" (Krea 3: 1K/2K, up to 4 references, faithful edits), "krea-2-large", "krea-2-medium". ' +
+              '"gpt-image-2" (OpenAI GPT Image 2), "kling-image-4" (Kling Image 4.0: 2K/4K, 1K renders at 2K, up to 10 references for the same face or style), "seedream-5.5" (ByteDance\'s newest Seedream: 1K/2K, up to 10 references), "seedream-5.0-pro", "krea-3" (Krea 3: 1K/2K, up to 4 references, faithful edits), "krea-2-large", "krea-2-medium". ' +
               "Use these exact ids — do not invent variants like gpt-image-2.0.",
           ),
         quality: z
