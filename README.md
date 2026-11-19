@@ -136,7 +136,7 @@ separate, curated profile (`src/chatgpt.ts`) because OpenAI's directory rules di
   (`lib/api-credit-mode.ts`).
 - **No purchase prompts.** Error text never links to pricing or top-ups.
 - **Attached photos** arrive through `openai/fileParams` as `{ download_url, file_id }`.
-- **Results render in a widget** (`src/widget.ts`, MCP Apps `ui://imageat/media-v1.html`). The widget
+- **Results render in a widget** (`src/widget.ts`, MCP Apps `ui://imageat/media-v2.html`). The widget
   also polls `imageat_check_video_status` itself while a video renders.
 
 The URL cannot be changed after the app is published without contacting OpenAI support.

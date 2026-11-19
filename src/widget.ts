@@ -10,7 +10,7 @@
  * MCP Apps JSON-RPC bridge over postMessage otherwise (Claude and other MCP Apps hosts).
  */
 
-export const MEDIA_WIDGET_URI = "ui://imageat/media-v1.html";
+export const MEDIA_WIDGET_URI = "ui://imageat/media-v2.html";
 
 /**
  * Hosts generated media is served from. Outputs are not mirrored to our CDN, so the
@@ -77,6 +77,8 @@ export const MEDIA_WIDGET_HTML = `<!doctype html>
   var openai = window.openai;
   var rpcId = 0;
   var pending = {};
+  var bridgeReady;
+  var bridgeInitialized = false;
   var current = null;
   var pollTimer = null;
   var pollStarted = 0;
@@ -93,9 +95,13 @@ export const MEDIA_WIDGET_HTML = `<!doctype html>
   function rpc(method, params) {
     return new Promise(function (resolve, reject) {
       var id = ++rpcId;
-      pending[id] = { resolve: resolve, reject: reject };
+      var timeout;
+      pending[id] = {
+        resolve: function (value) { clearTimeout(timeout); resolve(value); },
+        reject: function (error) { clearTimeout(timeout); reject(error); }
+      };
       window.parent.postMessage({ jsonrpc: "2.0", id: id, method: method, params: params || {} }, "*");
-      setTimeout(function () {
+      timeout = setTimeout(function () {
         if (pending[id]) { delete pending[id]; reject(new Error("Host did not respond")); }
       }, 60000);
     });
@@ -129,7 +135,7 @@ export const MEDIA_WIDGET_HTML = `<!doctype html>
 
   function callTool(name, args) {
     if (openai && typeof openai.callTool === "function") return openai.callTool(name, args);
-    return rpc("tools/call", { name: name, arguments: args });
+    return bridgeReady.then(function () { return rpc("tools/call", { name: name, arguments: args }); });
   }
 
   function structuredFrom(result) {
@@ -261,25 +267,27 @@ export const MEDIA_WIDGET_HTML = `<!doctype html>
     new ResizeObserver(function () {
       var height = document.documentElement.scrollHeight;
       if (openai && typeof openai.notifyIntrinsicHeight === "function") openai.notifyIntrinsicHeight(height);
-      else notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height: height });
+      else if (bridgeInitialized) notify("ui/notifications/size-changed", { width: document.documentElement.scrollWidth, height: height });
     }).observe(document.body);
   }
 
-  // ---- Boot ----------------------------------------------------------------
-  if (openai) {
-    if (openai.toolOutput) show(openai.toolOutput);
-  } else {
-    rpc("ui/initialize", {
-      protocolVersion: "2025-06-18",
-      appInfo: { name: "imageat-media", version: "1.0.0" },
-      appCapabilities: { availableDisplayModes: ["inline"] },
-    })
-      .then(function (result) {
-        if (result && result.hostContext) setTheme(result.hostContext.theme);
-        notify("ui/notifications/initialized", {});
-      })
-      .catch(function () {});
-  }
+  // Always initialize MCP Apps, including hosts that expose window.openai.
+  // The host waits for initialized before it considers the iframe ready.
+  renderStatusCard("pending", "Loading…", "");
+  if (openai && openai.toolOutput) show(openai.toolOutput);
+  bridgeReady = rpc("ui/initialize", {
+    protocolVersion: "2026-01-26",
+    appInfo: { name: "imageat-media", version: "2.0.0" },
+    appCapabilities: {}
+  }).then(function (result) {
+    bridgeInitialized = true;
+    if (result && result.hostContext) setTheme(result.hostContext.theme);
+    notify("ui/notifications/initialized", {});
+  });
+  bridgeReady.catch(function () {
+    // Preserve a result already rendered through a legacy compatibility host.
+    if (!current) renderStatusCard("error", "Couldn't load the result", "Ask the assistant to share the media link.");
+  });
 })();
 </script>
 </body>
